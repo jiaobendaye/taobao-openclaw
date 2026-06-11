@@ -83,11 +83,12 @@ function normalizeDate(val, isEnd) {
   return null;
 }
 
-// 用于子目录命名的纯日期（去空格和冒号）
-function dateDirLabel(start, end) {
-  const s = start.replace(/\s+/g, '_').replace(/:/g, '');
-  const e = end.replace(/\s+/g, '_').replace(/:/g, '');
-  return `${s}_to_${e}`;
+// 子目录：YYYY-MM-DD/startHHmmss_to_endHHmmss/
+function dateDirPath(start, end) {
+  const [dateS, timeS] = start.split(' ');
+  const [dateE, timeE] = end.split(' ');
+  const timeDir = `${timeS.replace(/:/g, '')}_to_${timeE.replace(/:/g, '')}`;
+  return path.join(dateS, timeDir);
 }
 
 // ---- CDP 检测与浏览器管理 ----
@@ -257,6 +258,64 @@ async function exportOrders(page) {
   await new Promise(r => setTimeout(r, 800));
   await page.click('text=按查询结果导出');
 
+  // 检测「导出时间过长」弹窗
+  await new Promise(r => setTimeout(r, 2000));
+  const isAsync = await page.evaluate(() => {
+    const body = document.body.innerText;
+    return body.includes('导出时间过长') || body.includes('导出记录里面进行查看');
+  });
+
+  if (isAsync) {
+    log('检测到异步导出，关闭弹窗...');
+    // 点确定或关闭按钮
+    await page.click('button:has-text("确定")').catch(() => {});
+    await page.click('[class*="dialog"] button:has-text("确定")').catch(() => {});
+    await new Promise(r => setTimeout(r, 1000));
+
+    // 打开导出记录（在导出按钮的下拉菜单里）
+    log('打开导出记录页面...');
+    await page.click('button:has-text("导出")');
+    await new Promise(r => setTimeout(r, 800));
+    await page.click('text=导出记录');
+    await new Promise(r => setTimeout(r, 3000));
+
+    // 等导出完成并下载
+    log('等待异步导出完成...');
+    for (let i = 0; i < 120; i++) {
+      // 尝试点下载按钮
+      const downloadBtn = page.locator('text=下载').first();
+      if (await downloadBtn.isVisible().catch(() => false)) {
+        const rowText = await page.evaluate(() => {
+          const rows = document.querySelectorAll('tr, [class*="row"]');
+          return [...rows].slice(0, 5).map(r => r.textContent?.trim().slice(0, 100));
+        });
+        log('导出记录行: ' + JSON.stringify(rowText));
+        await downloadBtn.click();
+        await new Promise(r => setTimeout(r, 3000));
+        break;
+      }
+
+      // 同时检查是否直接下载了
+      const currentFiles = fs.readdirSync(DATA_DIR).filter(f => f.endsWith('.xlsx') && !f.endsWith('.crdownload'));
+      for (const f of currentFiles) {
+        if (!beforeFiles.has(f)) {
+          const p = path.join(DATA_DIR, f);
+          try {
+            const stat = fs.statSync(p);
+            if (stat.size > 0) {
+              log(`异步下载完成: ${f} (${(stat.size / 1024).toFixed(1)} KB)`);
+              return { name: f, size: stat.size, path: p };
+            }
+          } catch {}
+        }
+      }
+
+      await new Promise(r => setTimeout(r, 2000));
+      if (i % 15 === 14) log(`  已等待 ${(i + 1) * 2} 秒...`);
+    }
+  }
+
+  // 正常下载流程
   log('等待下载完成...');
   for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 1000));
@@ -332,7 +391,7 @@ async function main() {
     const file = await exportOrders(page);
 
     // 7. 移动到日期子目录
-    const subDir = path.join(DATA_DIR, dateDirLabel(start, end));
+    const subDir = path.join(DATA_DIR, dateDirPath(start, end));
     fs.mkdirSync(subDir, { recursive: true });
     const destPath = path.join(subDir, file.name);
     fs.renameSync(file.path, destPath);
