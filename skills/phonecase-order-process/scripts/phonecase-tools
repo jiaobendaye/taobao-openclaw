@@ -1,0 +1,15 @@
+#!/bin/bash
+# phonecase-tools wrapper script for OpenClaw skill
+# Calls the compiled binary at its canonical location
+#
+# Usage: phonecase-tools <command> [args...]
+
+BINARY="/home/jiaobendaye/lab/taobao/order-process/build/bin/phonecase-tools"
+
+if [ ! -x "$BINARY" ]; then
+    echo "错误: 未找到二进制文件 $BINARY" >&2
+    echo "请先执行: cd ~/lab/taobao/order-process && make linux" >&2
+    exit 1
+fi
+
+exec "$BINARY" "$@"
