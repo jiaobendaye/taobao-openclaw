@@ -73,6 +73,16 @@ node skills/taobao-order-fetcher/scripts/fetch-orders.mjs --start "2026-06-10 08
 4. **日期输入**：placeholder `起始日期` / `结束日期`，填入 `YYYY-MM-DD HH:mm:ss`
 5. **超时兜底**：60秒超时后额外等2秒再检查一次
 
+## 区间语义
+
+千牛付款时间搜索为 **闭区间 `[start, end]`** — 起始和结束都包含。
+
+对去重的影响：
+- 若用 `lastExportEnd` 直接作为下一次 `start`，边界秒的订单会重复
+- 正确做法：`nextStart = lastExportEnd + 1秒`
+
+> 经 2026-06-12 实测验证确认。
+
 ## 常见问题
 
 | 问题 | 原因/解决 |

@@ -232,9 +232,15 @@ async function searchOrders(page) {
   await page.click('button:has-text("搜索")');
   await new Promise(r => setTimeout(r, 4000));
 
+  // 直接数订单表格里的数据行（不是「全部」标签的总数）
   const count = await page.evaluate(() => {
-    const m = document.body.innerText.match(/全部\s*\n*(\d+)/);
-    return m ? parseInt(m[1]) : 0;
+    // 找订单表格的数据行：排除暂无数据、表头、loading等
+    const tbody = document.querySelector('[class*="table"] tbody');
+    if (!tbody) return 0;
+    const rows = tbody.querySelectorAll('tr');
+    // 过滤掉"暂无数据"行
+    const dataRows = [...rows].filter(r => !r.textContent?.includes('暂无数据'));
+    return dataRows.length;
   });
   log(`搜索结果: ${count} 条订单`);
   return count;
@@ -383,8 +389,8 @@ async function main() {
     // 5. 搜索
     const count = await searchOrders(page);
     if (count === 0) {
-      console.error('没有搜索到订单');
-      process.exit(1);
+      log('该时段没有订单');
+      process.exit(0);
     }
 
     // 6. 导出
