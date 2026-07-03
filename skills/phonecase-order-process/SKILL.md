@@ -1,15 +1,15 @@
 ---
 name: "phonecase-order-process"
-description: "手机壳订单处理：filter筛选、dangkou档口分配、peijian配件提取、pizhi皮质壳分配"
-trigger: "当用户明确说跑某个命令（filter/dangkou/peijian/pizhi）时触发"
+description: "手机壳订单处理：filter筛选、dangkou档口分配、peijian配件提取、pizhi皮质壳分配、datu打图工厂分配"
+trigger: "当用户明确说跑某个命令（filter/dangkou/peijian/pizhi/datu）时触发"
 ---
 
 # phonecase-tools 订单处理技能
 
 ## 概述
 
-`phonecase-tools` 是 Go 编译的淘宝手机壳订单处理工具（v2026-07-01）。
-**四个独立命令**（filter / dangkou / peijian / pizhi），**没有默认动作**（2026-07-01 老板指定），老板必须明确点名跑哪个才执行。
+`phonecase-tools` 是 Go 编译的淘宝手机壳订单处理工具（v2026-07-03）。
+**五个独立命令**（filter / dangkou / peijian / pizhi / datu），**没有默认动作**（2026-07-01 老板指定），老板必须明确点名跑哪个才执行。
 
 - **binary**: `/home/jiaobendaye/lab/taobao/order-process/build/bin/phonecase-tools`
 - **wrapper 脚本**: `~/.openclaw/workspace/skills/phonecase-order-process/scripts/phonecase-tools`
@@ -36,6 +36,7 @@ cd ~/lab/taobao/order-process && make linux
 | dangkou | `自设编码.xlsx` |
 | peijian | `配件编码.xlsx` |
 | pizhi | `皮质壳配置表.xlsx` |
+| datu | `打图工厂配置表.xlsx` |
 
 **圣杯目录**（固定路径）：`~/.openclaw/workspace/order-configs/`
 - 老板需要哪份配置，就把文件放到这个目录（或以同名重命名）
@@ -48,6 +49,7 @@ cd ~/lab/taobao/order-process && make linux
 | dangkou | `自设` / `自设编码` |
 | peijian | `配件` / `配件编码` / `peijian` |
 | pizhi | `皮质` / `皮` / `pizhi` |
+| datu | `打图` / `工厂` / `datu` |
 
 **边界情况**：
 - 多个文件匹配关键字 → 问老板选哪个
@@ -195,6 +197,49 @@ phonecase-tools pizhi <订单Excel文件> <皮质壳配置表.xlsx>
 {"path": "/path/to/皮质壳配置表.xlsx"}
 ```
 
+### 5. datu — 打图工厂分配 🆕 v2026-07-03
+
+```bash
+phonecase-tools datu <订单Excel文件> <打图工厂配置表.xlsx>
+```
+
+**输入**：
+- 订单 Excel（必需列：`商品id`, `商品规格`, `商品规格商家编码`, `商品数量`）
+- `打图工厂配置表.xlsx`：打图工厂配置 **（必需，CLI 不读 datu_config.json）**
+
+**打图工厂配置表 Excel 格式**：
+- **单 Sheet「打图工厂编码」**（自动跳过 `WpsReserved*` sheet）
+- **列式布局**：每列一个工厂（列头 = 工厂名），下方是该工厂支持的**商品 ID 列表**（一行一个）
+
+示例：
+
+| 工厂A | 工厂B |
+|-------|-------|
+| 123456 | 654321 |
+| 123457 |       |
+
+**商品规格解析**：
+- 规格格式 `{手机型号}|...`（例 `iPhone 15 Pro|...`）→ 型号 `iPhone15Pro`（去空格）
+- 商品规格商家编码格式 `【素材-编码】`（例 `【DYT彩银白色-DTY7958】`）→ 素材 `DYT彩银白色` / 编码 `DTY7958`
+- 不符合 `素材-编码` 格式时（如 `【PH皮质】`），素材和编码均为空
+
+**聚合维度**：`(工厂, 编码, 型号, 素材) 聚合数量`
+
+**商品ID 不在配置表中 → 静默跳过**（不输出）
+
+**输出**：`<原文件名>_output/打图结果.xlsx`，每工厂一个 Sheet，仅输出有数据的工厂
+
+| Sheet | 表头 |
+|-------|------|
+| `<工厂名>` | `编码 \| 型号 \| 素材 \| 数量 \| 姓名` |
+
+> 姓名列固定值 `凡凡`，输出按 (工厂, 编码, 型号, 素材) 聚合
+
+**配置**：`datu_config.json` **CLI 不读**（仅 GUI 内部使用）
+```json
+{"path": "/path/to/打图工厂配置表.xlsx"}
+```
+
 ## 配置文件位置
 
 ### CLI 圣杯目录（推荐路径）
@@ -210,10 +255,12 @@ build/bin/
 ├── dangkou_config.json      # 自设编码.xlsx 路径（**仅 GUI 使用，CLI 不读**）
 ├── peijian_config.json      # 配件编码.xlsx 路径（**仅 GUI 使用，CLI 不读**）
 ├── pizhi_config.json        # 皮质壳配置表.xlsx 路径（**仅 GUI 使用，CLI 不读**）
+├── datu_config.json         # 打图工厂配置表.xlsx 路径（**仅 GUI 使用，CLI 不读**）
 └── phonecase-tools.log      # 运行日志
 ```
 
 > **🆕 v2026-07-01 binary 升级**：CLI 必须显式传配置文件（`<自设编码.xlsx>` 等），不再读取上面这些 `_config.json`。
+> **🆕 v2026-07-03 datu 同样规则**：CLI 必须显式传 `<打图工厂配置表.xlsx>`。
 > CLI 推荐从圣杯目录 `~/.openclaw/workspace/order-configs/` 读取，老板上覆盖更新，我跑前显示 mtime 让老板确认。
 
 ## 更新配置
@@ -236,7 +283,7 @@ cat > ~/lab/taobao/order-process/build/bin/keywords.json << 'EOF'
 }
 EOF
 
-# dangkou / peijian / pizhi config（仅 GUI 使用）
+# dangkou / peijian / pizhi / datu config（仅 GUI 使用）
 cat > ~/lab/taobao/order-process/build/bin/dangkou_config.json << 'EOF'
 {"path": "/absolute/path/to/自设编码.xlsx"}
 EOF
@@ -245,6 +292,9 @@ cat > ~/lab/taobao/order-process/build/bin/peijian_config.json << 'EOF'
 EOF
 cat > ~/lab/taobao/order-process/build/bin/pizhi_config.json << 'EOF'
 {"path": "/absolute/path/to/皮质壳配置表.xlsx"}
+EOF
+cat > ~/lab/taobao/order-process/build/bin/datu_config.json << 'EOF'
+{"path": "/absolute/path/to/打图工厂配置表.xlsx"}
 EOF
 ```
 
@@ -269,9 +319,10 @@ EOF
 | `用法: phonecase-tools dangkou <订单Excel文件> <自设编码.xlsx>` | 缺配置参数（v2026-07-01 后必需） |
 | `用法: phonecase-tools peijian <订单Excel文件> <配件编码.xlsx>` | 缺配置参数（v2026-07-01 后必需） |
 | `用法: phonecase-tools pizhi <订单Excel文件> <皮质壳配置表.xlsx>` | 缺配置参数（v2026-07-01 后必需） |
+| `用法: phonecase-tools datu <订单Excel文件> <打图工厂配置表.xlsx>` | 缺配置参数（v2026-07-03 后必需） |
 | `数据行不足` | Excel 只有表头 |
 | `未找到「xxx」列` | 缺少必需列（看上面各命令的"必需列"） |
-| `打开配置文件失败` | 自设编码.xlsx / 配件编码.xlsx / 皮质壳配置表.xlsx 找不到或损坏 |
+| `打开配置文件失败` | 自设编码.xlsx / 配件编码.xlsx / 皮质壳配置表.xlsx / 打图工厂配置表.xlsx 找不到或损坏 |
 | `打开订单文件失败` | 输入文件不存在或不是 xlsx |
 | `配件编码文件至少需要 2 个 Sheet` | 配件编码.xlsx 缺「自设编码」或「档口分配」sheet |
 | `SKU「xxx」有 N 个配件，但编码列有 M 个编码` | 配件个数 ≠ 编码列数，修正「配件编码.xlsx」的编码列数量 |
@@ -299,6 +350,11 @@ cd ~/lab/taobao/order-process && make linux
 ./build/bin/phonecase-tools pizhi \
   "data/xxx.xlsx" \
   "data/皮质壳配置表.xlsx"
+
+# datu 测试
+./build/bin/phonecase-tools datu \
+  "data/xxx.xlsx" \
+  "data/打图工厂配置表.xlsx"
 ```
 
 ## 相关能力
@@ -306,5 +362,5 @@ cd ~/lab/taobao/order-process && make linux
 老板还开发了 **Web 版本**（`build/bin/phonecase-tools.html`，9.3 MB）：
 - 单 HTML 部署，浏览器双击打开即用
 - 数据完全本地处理，不上传
-- 4 个 tab：订单筛选 / 档口分配 / 配件提取 / 皮质壳分配
+- 5 个 tab：订单筛选 / 档口分配 / 配件提取 / 皮质壳分配 / 打图工厂分配
 - 如果老板不想走命令行，可推荐 web 版（老板主动要求时再介绍）
