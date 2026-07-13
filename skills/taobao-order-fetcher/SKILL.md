@@ -11,73 +11,80 @@ trigger: 当用户说"抓取淘宝待发货订单"、"拉取订单"、"导出千
 
 ## 执行流程
 
+**导航采用「四步法」（2026-07-13 老板重设）**：先保证浏览器、再导航、再按需登录，最后才真正干活。
+
 ```
-检测9222端口 CDP
+第一步：保证浏览器可用（CDP）
   │
-  ├─→ 已运行 → 直接连接复用
+  ├─ 检测 9222 端口
+  │    ├─ 已运行 → 直接 chromium.connectOverCDP() 复用
+  │    └─ 未运行 → 启动 Chromium（headed，shell spawn + CDP 连接）
+  │         ├─ 优先：/snap/bin/chromium（snap，默认 profile，无需 --user-data-dir）
+  │         ├─ 降级：~/.cache/ms-playwright/chromium-1223/chrome-linux64/chrome
+  │         ├─ 关键参数：--remote-debugging-port=9222 --no-sandbox --no-first-run
+  │         └─ 等待 CDP 就绪 → connectOverCDP()
   │
-  └─→ 未运行 → 启动 Chromium（headed，shell spawn + CDP 连接）
-                │
-                ├─ 优先：/snap/bin/chromium（snap，默认 profile，无需 --user-data-dir）
-                ├─ 降级：~/.cache/ms-playwright/chromium-1223/chrome-linux64/chrome
-                ├─ 关键参数：--remote-debugging-port=9222 --no-sandbox --no-first-run
-                ├─ 等待 CDP 就绪 → chromium.connectOverCDP()
-                └─ 打开 https://qn.taobao.com
-                       │
-                       ├─ 已登录？→ 直接进入工作台
-                       │
-                       └─ 未登录 → 千牛首页 → 点击「登录千牛」
-                                    │
-                                    └─ 新窗口 loginmyseller.taobao.com
-                                       │
-                                       ├─ 登录表单在 iframe 内
-                                       │   iframe: havanalogin.taobao.com/mini_login.htm
-                                       │
-                                       ├─ 三种方式Tab：扫码登录 / 密码登录 / 短信登录
-                                       │   自动化用「密码登录」
-                                       │
-                                       ├─ 密码登录表单（iframe内）：
-                                       │   ├─ 账号：#fm-login-id
-                                       │   ├─ 密码：#fm-login-password
-                                       │   ├─ 子账号格式：主账号:子账号名（英文冒号）
-                                       │   ├─ 点击 button:has-text("登录")
-                                       │   └─ 检查错误：
-                                       │       ├─ 无错误 → 登录成功
-                                       │       └─ 有错误 → loginAttempts++
-                                       │           ├─ < 3 次 → 提示老板，等 5s 后重试
-                                       │           └─ ≥ 3 次 → ❌ 停止重试
-                                       │              → 当前 channel 发提醒
-                                       │              → exit 1 退出抓取
-                                       │
-                                       └─ 登录成功 → myseller.taobao.com/home.htm/QnworkbenchHome/
+第二步：导航到打单中心（如果已有则刷新）
   │
-  ├─→ 导航到打单中心
-  │     ├─ 策略1（优先）：直接 goto DADAN_PAGE
-  │     │   → myseller.taobao.com/home.htm/qn-order/unshipped
-  │     │   绕过可能存在的引导遮罩/自动跳转干扰
-  │     │
-  │     └─ 策略2（降级）：菜单导航
-  │           ├─ 点击顶部「交易」→ a.navItem--uDJGIOeJ:has-text("交易")
-  │           └─ 点击「打单工具」← 新版叫法，即打单中心
-  │              注意：可能有新手引导 driver-overlay SVG 拦截点击
+  ├─ 复用/打开一个 page（优先打单中心 > 工作台 > 千牛首页 > 新建）
   │
-  ├─→ 在打单中心（打单工具）页面操作：
-  │     ├─ 默认在「待发货」Tab
-  │     ├─ 页面Tab：待发货、已发货、异常订单、物流预警、手工订单、备货单、售后管理...
-  │     └─ 主要按钮：同步订单、搜索、导出、打快递单、发货、打印快递单
+  └─ URL 检查：
+       ├─ 当前已在 qn-order/unshipped → page.reload()（拿最新订单/避免过期）
+       └─ 否则 → page.goto('https://myseller.taobao.com/home.htm/qn-order/unshipped')
+               → 等 5s 让 SPA 首屏渲染完
   │
-  ├─→ 设定付款时间范围
-  │    精度：秒（格式 YYYY-MM-DD HH:mm:ss）
+第三步：判断打单中心是否可用
+  │
+  ├─ 三条全部满足才算「可用」：
+  │    1. URL 在 qn-order/unshipped
+  │    2. URL 没跳到 login
+  │    3. 页面 DOM 含「搜索」+「导出」按钮（关键 UI 存在）
+  │
+  └─ 判断结果：
+       ├─ ✅ 可用 → 跳过登录，直接进导出流程
+       └─ ❌ 不可用 → 触发登录流程 ↓
+                   │
+                   └─ loginmyseller.taobao.com 登录页
+                      │
+                      ├─ 登录表单在 iframe 内
+                      │   iframe: havanalogin.taobao.com/mini_login.htm
+                      │
+                      ├─ 切到「密码登录」Tab
+                      │
+                      ├─ 密码登录表单（iframe内）：
+                      │   ├─ 账号：#fm-login-id
+                      │   ├─ 密码：#fm-login-password
+                      │   ├─ 子账号格式：主账号:子账号名（英文冒号）
+                      │   └─ 点击 button:has-text("登录")
+                      │
+                      └─ 失败重试策略（MAX_LOGIN_ATTEMPTS = 3）：
+                          ├─ < 3 次 → 等 5s 后重试
+                          └─ ≥ 3 次 → ❌ 当前 channel 发提醒 + exit 1
+  │
+第四步：再次判断打单中心是否可用
+  │
+  ├─ 登录成功后强制 page.goto(打单中心) 再等 5s
+  │
+  └─ 判断结果：
+       ├─ ✅ 可用 → 进导出流程
+       └─ ❌ 仍不可用 → 报错退出
+                    → 可能原因：账号/密码错、Cookie 失效、风控拦截
+                    → 由 main().catch() 捕获 → exit 1
+  │
+后续（导出流程）：
+  ├─ 在打单中心页面操作：
+  │    ├─ 默认在「待发货」Tab
+  │    └─ 主要按钮：同步订单、搜索、导出、打快递单、发货、打印快递单
+  │
+  ├─ 设定付款时间范围（精度：秒）
   │    起始：必填，默认 00:00:00
   │    结束：默认当前时间
+  │    （--all 模式：清空起始/结束，不点确定）
   │
-  ├─→ 点击「搜索」
-  │
-  ├─→ 点击「导出」→「按查询结果导出」
-  │
-  ├─→ 等下载完成（Chrome自己下载，不拦截）
-  │
-  └─→ 移动到 ~/lab/taobao/data/起始_to_结束/
+  ├─ 点击「搜索」
+  ├─ 点击「导出」→「按查询结果导出」
+  ├─ 等下载完成（Chrome自己下载，不拦截）
+  └─ 移动到 ~/lab/taobao/data/起始_to_结束/
 ```
 
 ## 使用方法
@@ -231,20 +238,52 @@ if (err) throw new Error(`登录失败: ${err}`);
 
 > 为什么是 3 次：前两次是正常容错（输错、网抖、Cookie 残留），第 3 次仍失败基本可判定为账号/密码层面的硬问题，继续重试没意义还可能触发风控。
 
-## 导航到打单中心
+## 导航到打单中心（四步法）
 
-打单中心=新版千牛的「打单工具」，路径：**交易 → 物流管理 → 打单工具**。
+打单中心 = 新版千牛的「打单工具」，路径：**交易 → 物流管理 → 打单工具**。
 
-**推荐用直接 URL goto**（绕过引导遮罩等不稳定因素）：
+> **核心思想（2026-07-13 老板重设）**：先保证浏览器、再导航、再按需登录、最后才真正干活。**登录不再是前置步骤**，而是「打单中心不可用时的兜底」。
+
+### 四步详解
+
+**第一步：保证浏览器可用（CDP）**
+- `ensureBrowser(port)`：先 `fetch('http://127.0.0.1:9222/json/version')`，已运行 → `chromium.connectOverCDP()`；未运行 → `spawn` 启 Chromium，等 CDP 就绪。
+
+**第二步：导航到打单中心（已有则刷新）**
+- `navigateToDadanCenter(browser)`：先 `findOrOpenPage` 找一个可用 page
+  - 当前已在 `qn-order/unshipped` → `page.reload()`（拿最新订单/避免页面过期）
+  - 否则 → `page.goto('https://myseller.taobao.com/home.htm/qn-order/unshipped')`
+- 等 5s 让 SPA 首屏渲染完
+
+**第三步：判断打单中心是否可用**
+- `isDadanAvailable(page)`：三条全部满足才算可用：
+  1. URL 含 `qn-order/unshipped`
+  2. URL 不含 `login`（没被重定向到登录页）
+  3. 页面 DOM 含 `搜索` + `导出` 按钮（关键 UI 存在）
+- ✅ 可用 → 直接进导出流程
+- ❌ 不可用 → 触发 `autoLoginWithRetry()` 走登录兜底
+
+**第四步：再次判断（登录后）**
+- 登录成功后强制 `page.goto(打单中心)`，再等 5s，再 `isDadanAvailable`
+- ✅ 可用 → 进导出流程
+- ❌ 仍不可用 → 抛错 `登录后打单中心仍不可用...`，由 `main().catch()` `exit 1` 退出
+
+### 推荐用直接 URL goto
+
+绕过引导遮罩等不稳定因素，最可靠：
 
 ```javascript
-// 直接跳转（最可靠）
-await page.goto('https://myseller.taobao.com/home.htm/qn-order/unshipped', {
-  waitUntil: 'domcontentloaded', timeout: 20000
-});
+// 直接跳转 / 刷新
+if (page.url().includes('qn-order/unshipped')) {
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
+} else {
+  await page.goto('https://myseller.taobao.com/home.htm/qn-order/unshipped', {
+    waitUntil: 'domcontentloaded', timeout: 20000,
+  });
+}
 ```
 
-菜单导航（可能被引导遮罩/自动跳转干扰）：
+菜单导航（不推荐，可能被引导遮罩/自动跳转干扰）：
 
 ```javascript
 // 1. 点击顶部导航「交易」
@@ -292,6 +331,7 @@ await page.waitForTimeout(5000);
 6. **凭据优先级**：`--user/--pass` 参数 > `TAOBAO_USER/TAOBAO_PASS` 环境变量
 7. **页面复用**：优先复用打单中心 > 工作台 > 千牛首页已有 tab，避免重复开
 8. **登录重试上限**：连续登录失败 ≥ 3 次自动停止重试，**当前 channel 发提醒老板联系管理员**并 `exit 1`
+9. **四步法导航（2026-07-13）**：浏览器 → 导航+刷新 → 判断 → 登录兜底 → 再判断，登录改为「按需触发」而非「前置步骤」
 
 ## 区间语义
 

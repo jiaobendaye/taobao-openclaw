@@ -1,21 +1,27 @@
 #!/usr/bin/env node
 /**
  * 淘宝千牛待发货订单抓取
- * 
+ *
+ * 导航到打单中心采用「四步法」（2026-07-13 老板重设）：
+ *   第一步：保证浏览器可用（CDP）
+ *   第二步：导航到打单中心，如果已经有该界面则刷新
+ *   第三步：判断打单中心是否可用；如果不可用 → 走登录流程
+ *   第四步：再次判断打单中心是否可用；如果仍不可用 → 报错退出
+ *
  * 自动检测/启动 Chrome CDP：
- *   1. 先检查 9222 端口是否已有 Chrome CDP
- *   2. 有 → 连接复用
- *   3. 无 → 启动新 Chromium
- * 
+ *   - 先检查 9222 端口是否已有 Chrome CDP
+ *   - 有 → 连接复用
+ *   - 无 → 启动新 Chromium
+ *
  * 登录失败处理（MAX_LOGIN_ATTEMPTS = 3）：
  *   - 凭据缺失 → 直接报错退出（提示传入 --user/--pass）
  *   - 累计失败 < 3 次 → 等待 5 秒后重试
  *   - 累计失败 ≥ 3 次 → 输出 ADMIN_ALERT marker + exit 1
  *     （agent / cron 见到 marker 后应把消息路由到当前对话 channel）
- * 
+ *
  * 日期精度：秒
- * 
- * 用法: 
+ *
+ * 用法:
  *   node fetch-orders.mjs --start 2026-06-10              # end=现在，start=00:00:00
  *   node fetch-orders.mjs --start "2026-06-10 08:00:00"  # 带时分秒
  *   node fetch-orders.mjs --start 2026-06-10 --end "2026-06-11 12:30:00"
@@ -236,36 +242,6 @@ async function findOrOpenPage(browser) {
 }
 
 /**
- * 检测登录状态
- * 返回: { needsLogin, reason, loginPage }
- */
-async function detectLoginState(page) {
-  const url = page.url();
-
-  // 已在工作台或订单页 → 已登录
-  if ((url.includes('myseller.taobao') || url.includes('qn-order')) && !url.includes('login')) {
-    return { needsLogin: false };
-  }
-
-  // 在千牛首页 → 需要点「登录千牛」
-  if (url === QN_HOME || url.startsWith(QN_HOME)) {
-    const bodyText = await page.evaluate(() => document.body?.innerText?.substring(0, 200));
-    if (bodyText.includes('登录千牛') || bodyText.includes('欢迎登录')) {
-      log('检测到千牛首页，需要登录');
-      return { needsLogin: true, reason: '在千牛首页，需要点击登录' };
-    }
-  }
-
-  // 在 loginmyseller 登录页
-  if (url.includes('loginmyseller') || url.includes('login')) {
-    return { needsLogin: true, reason: '在登录页面' };
-  }
-
-  // 未知状态，假定已登录
-  return { needsLogin: false };
-}
-
-/**
  * 尝试用凭据自动登录（参数优先，其次环境变量）
  * 返回: { success, error }
  */
@@ -336,62 +312,34 @@ async function tryAutoLogin(browser, page, cmdArgs) {
 }
 
 /**
- * 确保已登录：三层策略
- * 1. 已有 session（user-data-dir 持久化）→ 直接过
- * 2. 有环境变量凭据 → 自动填表登录
- * 3. 什么都没有 → 报错退出
+ * 判断「打单中心是否可用」
+ * 三条全部满足才算可用：
+ *   1. URL 在打单中心页面（qn-order/unshipped）
+ *   2. URL 没被重定向到登录页
+ *   3. 页面已渲染出关键 UI（导出 / 搜索 按钮存在）
+ *
+ * 返回 true / false；任何评估异常都视为不可用（让上层走登录兜底）
  */
-async function ensureLoggedIn(browser, cmdArgs) {
-  const ctx = browser.contexts()[0];
-  const pages = ctx.pages();
+async function isDadanAvailable(page) {
+  try {
+    const url = page.url();
+    if (!url.includes('qn-order/unshipped')) return false;
+    if (url.includes('login')) return false;
 
-  // 查找工作台页面
-  let workbenchPage = pages.find(p =>
-    p.url().includes('myseller.taobao') && !p.url().includes('login')
-  );
-
-  if (workbenchPage) {
-    log('✅ 检测到已有登录态，跳过登录');
-    return workbenchPage;
+    // 给 evaluate 套一层超时：打单中心有时首屏 DOM 还没渲染完
+    const result = await Promise.race([
+      page.evaluate(() => {
+        const body = document.body?.innerText || '';
+        // 关键 UI: 搜索 + 导出 都得在（导出是打单中心独有的按钮）
+        return body.includes('搜索') && body.includes('导出');
+      }),
+      new Promise(resolve => setTimeout(() => resolve(false), 3000)),
+    ]);
+    return result === true;
+  } catch (e) {
+    log(`检查打单中心可用性失败: ${e.message}`);
+    return false;
   }
-
-  // 找一个页面来检测状态
-  let page = pages.find(p => !p.url().startsWith('chrome-extension'));
-  if (!page) {
-    const newCtx = browser.contexts()[0];
-    page = await newCtx.newPage();
-    await page.goto(QN_HOME, { waitUntil: 'domcontentloaded', timeout: 20000 });
-  }
-
-  const state = await detectLoginState(page);
-
-  if (!state.needsLogin) {
-    // 看似已登录，实际验证一下：跳转到工作台
-    log('看似已登录，验证中...');
-    try {
-      await page.goto(DADAN_PAGE, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await new Promise(r => setTimeout(r, 3000));
-      if (page.url().includes('qn-order/unshipped')) {
-        log('✅ 登录态验证通过');
-        return page;
-      }
-      if (page.url().includes('login')) {
-        log('⚠️ 被重定向到登录页，登录态已过期');
-      }
-    } catch (e) {
-      log(`验证跳转失败: ${e.message}`);
-    }
-    // 验证失败，继续走登录流程
-  }
-
-  if (state.needsLogin) {
-    log(`需要登录: ${state.reason}`);
-  } else {
-    log('登录态验证失败，执行重新登录...');
-  }
-
-  // 尝试自动登录（最多 MAX_LOGIN_ATTEMPTS 次，失败超限触发管理员提醒）
-  return await autoLoginWithRetry(browser, page, cmdArgs);
 }
 
 /**
@@ -469,56 +417,66 @@ function emitAdminAlert(lastError) {
 }
 
 /**
- * 从千牛工作台导航到打单中心（打单工具）
- * 优先直接 URL goto（稳定），菜单导航作为降级（可能有引导遮罩/自动跳转干扰）
+ * 第二步：导航到打单中心
+ * - 如果已有打单中心页面：刷新（拿最新订单/避免页面过期）
+ * - 否则：直接 goto 打单中心 URL（绕过引导遮罩/菜单跳转等不稳定因素）
+ *
+ * 不在此处判断登录态 —— 登录交给第三步统一处理
  */
-async function navigateToDadan(page) {
+async function navigateToDadanCenter(browser) {
+  const page = await findOrOpenPage(browser);
   const url = page.url();
 
-  // 已在打单中心，直接返回
   if (url.includes('qn-order/unshipped')) {
-    log('已在打单中心页面');
-    return page;
+    log('第二步：已在打单中心，刷新页面...');
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
+  } else {
+    log('第二步：导航到打单中心（直接URL）...');
+    await page.goto(DADAN_PAGE, { waitUntil: 'domcontentloaded', timeout: 20000 });
   }
 
-  // 策略1：直接 goto（最可靠，绕过引导遮罩等问题）
-  // 无论当前在哪个页面，都先尝试直接跳转
-  log('导航到打单中心（直接URL）...');
-  await page.goto(DADAN_PAGE, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  // 等页面渲染（千牛 SPA 首屏较慢）
   await new Promise(r => setTimeout(r, 5000));
+  return page;
+}
 
-  // 检查是否被重定向到登录页
-  const currentUrl = page.url();
-  if (currentUrl.includes('login')) {
-    log('⚠️ 跳转到登录页，登录态可能已过期');
-    throw new Error('登录态过期，需要重新登录');
-  }
-
-  if (currentUrl.includes('qn-order/unshipped')) {
-    log('已到达打单中心（打单工具）');
+/**
+ * 第三步 + 第四步：确保打单中心真正可用
+ *   第三步：判断 → 不可用则走 autoLoginWithRetry
+ *   第四步：登录后再次导航 + 再次判断 → 仍不可用则报错退出
+ *
+ * 错误统一由上层的 main().catch() 捕获并 exit 1
+ */
+async function ensureDadanAvailable(browser, page, cmdArgs) {
+  // 第三步：首次判断（第二步只负责导航，不做可用性判断）
+  if (await isDadanAvailable(page)) {
+    log('✅ 第三步：打单中心可用，无需登录');
     return page;
   }
 
-  // 策略2：菜单导航（交易 → 打单工具），可能被引导遮罩/自动跳转干扰
-  log('直接URL未成功，尝试菜单导航...');
+  log('⚠️ 第三步：打单中心不可用，触发登录流程...');
+  page = await autoLoginWithRetry(browser, page, cmdArgs);
+
+  // 第四步：登录成功 → 强制重新导航到打单中心，再判断一次
+  log('第四步：登录后重新导航到打单中心...');
   try {
-    await page.click('a.navItem--uDJGIOeJ:has-text("交易")');
-    await new Promise(r => setTimeout(r, 2000));
-    await page.click('a:has-text("打单工具")');
+    await page.goto(DADAN_PAGE, { waitUntil: 'domcontentloaded', timeout: 20000 });
     await new Promise(r => setTimeout(r, 5000));
   } catch (e) {
-    log(`菜单导航失败: ${e.message}`);
+    log(`登录后导航到打单中心失败: ${e.message}`);
   }
 
-  if (page.url().includes('qn-order/unshipped')) {
-    log('已到达打单中心');
+  if (await isDadanAvailable(page)) {
+    log('✅ 第四步：登录后打单中心可用');
     return page;
   }
 
-  // 最后的兜底
-  log('再次尝试直接跳转...');
-  await page.goto(DADAN_PAGE, { waitUntil: 'domcontentloaded', timeout: 20000 });
-  return page;
+  // 仍不可用：可能是登录失败 / 凭据错 / 风控拦截
+  throw new Error(
+    '登录后打单中心仍不可用。\n' +
+    '可能原因：账号/密码错误、Cookie 失效、被风控拦截。\n' +
+    '请检查 --user / --pass 或 TAOBAO_USER / TAOBAO_PASS 是否正确。'
+  );
 }
 
 async function setDateRange(page, start, end) {
@@ -804,37 +762,34 @@ async function main() {
     log('📋 全部订单模式：不设时间筛选');
   }
 
-  // 1. 确保浏览器可用
+  // 第一步：保证浏览器可用（CDP）
   const browser = await ensureBrowser(args.port);
 
   try {
-    // 2. 查找已有页面或打开千牛首页
-    let page = await findOrOpenPage(browser);
+    // 第二步：导航到打单中心，如果已经有该界面则刷新
+    let page = await navigateToDadanCenter(browser);
 
-    // 3. 确保已登录（三层策略）
-    page = await ensureLoggedIn(browser, args);
+    // 第三步 + 第四步：判断打单中心是否可用 → 不可用则登录 → 再次判断 → 仍不可用则报错
+    page = await ensureDadanAvailable(browser, page, args);
 
-    // 4. 导航到打单中心
-    page = await navigateToDadan(page);
-
-    // 5. 设置日期 或 清空日期
+    // 后续：正常导出流程
     if (isAll) {
       await clearDateRange(page);
     } else {
       await setDateRange(page, start, end);
     }
 
-    // 6. 搜索
+    // 搜索
     const count = await searchOrders(page);
     if (count === 0) {
       log(isAll ? '当前没有待发货订单' : '该时段没有订单');
       process.exit(0);
     }
 
-    // 7. 导出
+    // 导出
     const file = await exportOrders(page);
 
-    // 8. 移动到日期子目录
+    // 移动到日期子目录
     const subDir = path.join(
       DATA_DIR,
       isAll ? allDirPath() : dateDirPath(start, end)
