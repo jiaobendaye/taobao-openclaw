@@ -146,11 +146,31 @@ node skills/taobao-order-fetcher/scripts/fetch-orders.mjs --all
 
 ## 浏览器启动
 
-**优先 snap Chromium**（`/snap/bin/chromium`），用 snap 默认 profile 保持登录态，无需 `--user-data-dir`。
+> **跨平台（2026-07-13 老板加 Windows 支持）**：脚本会自动检测当前平台，挑能用的 Chromium / Chrome / Edge。
 
-**降级：Playwright 缓存 Chromium**（`~/.cache/ms-playwright/chromium-1223/chrome-linux64/chrome`），需指定 `--user-data-dir=~/.cache/chrome-cdp-profile`。
+### 自动查找顺序（按 `findChromeBin()`）
+
+| 平台 | 查找顺序 |
+|------|---------|
+| **Linux** | 1. `/snap/bin/chromium`（默认 profile）→ 2. `~/.cache/ms-playwright/chromium-1223/chrome-linux64/chrome` |
+| **Windows** | 1. `%LOCALAPPDATA%\ms-playwright\chromium-1223\chrome-win\chrome.exe` → 2. 系统 Chrome → 3. 系统 Edge（都用默认 profile） |
+| **macOS** | 1. `~/Library/Caches/ms-playwright/chromium-1223/...` → 2. `/Applications/Google Chrome.app/...` |
+
+找不到时脚本会**报错并给出对应平台的安装提示**（不会静默吞错）。
+
+### 路径映射
+
+| 用途 | Linux | Windows |
+|------|-------|---------|
+| 数据导出目录 | `~/lab/taobao/data/` | `C:\Users\<user>\lab\taobao\data\` |
+| 浏览器 user-data-dir（Playwright bundled） | `~/.cache/chrome-cdp-profile/` | `%LOCALAPPDATA%\chrome-cdp-profile\` |
+| HOME 来源 | `os.homedir()` → `/home/<user>` | `os.homedir()` → `C:\Users\<user>` |
+
+### 手动启动（绕过脚本自动启动，先把浏览器跑起来）
 
 ```bash
+# ===== Linux =====
+
 # snap Chromium（推荐，默认 profile）
 /snap/bin/chromium \
   --remote-debugging-port=9222 \
@@ -169,6 +189,64 @@ node skills/taobao-order-fetcher/scripts/fetch-orders.mjs --all
   --user-data-dir=$HOME/.cache/chrome-cdp-profile \
   "https://qn.taobao.com" &
 ```
+
+```cmd
+:: ===== Windows =====
+
+:: Playwright Chromium（推荐，先 npx playwright install chromium 装好）
+"%LOCALAPPDATA%\ms-playwright\chromium-1223\chrome-win\chrome.exe" ^
+  --remote-debugging-port=9222 ^
+  --no-sandbox ^
+  --no-first-run ^
+  --no-default-browser-check ^
+  --user-data-dir="%LOCALAPPDATA%\chrome-cdp-profile" ^
+  "https://qn.taobao.com"
+
+:: 系统 Chrome（默认 profile，无需 user-data-dir）
+"C:\Program Files\Google\Chrome\Application\chrome.exe" ^
+  --remote-debugging-port=9222 --no-sandbox ^
+  "https://qn.taobao.com"
+
+:: 系统 Edge（Win10/11 自带）
+"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" ^
+  --remote-debugging-port=9222 --no-sandbox ^
+  "https://qn.taobao.com"
+```
+
+```bash
+# ===== macOS =====
+~/Library/Caches/ms-playwright/chromium-1223/chrome-mac/Chromium.app/Contents/MacOS/Chromium \
+  --remote-debugging-port=9222 --no-sandbox --no-first-run \
+  --user-data-dir=$HOME/.cache/chrome-cdp-profile \
+  "https://qn.taobao.com" &
+```
+
+### Windows 跑前的准备
+
+```cmd
+:: 1. 安装 Node.js（≥18）
+node --version
+
+:: 2. 在项目目录装 playwright
+npm init -y
+npm install playwright
+
+:: 3. 让 playwright 下载自带 chromium
+npx playwright install chromium
+
+:: 4. 跑脚本
+node skills\taobao-order-fetcher\scripts\fetch-orders.mjs --start 2026-07-13
+```
+
+### 跨平台常见坑
+
+| 坑 | 解决 |
+|----|-----|
+| Windows 路径有空格（`C:\Program Files\...`） | Node `spawn` 默认正确处理；不要设 `shell:true` |
+| `--user-data-dir` Windows 上要不要带盘符 | 要，且用绝对路径：`%LOCALAPPDATA%\chrome-cdp-profile` |
+| 路径分隔符 `/` vs `\` | 全程用 `path.join()`，Node 自动适配；不要硬编码 |
+| `process.env.HOME` 在 Windows 上是 undefined | 用 `os.homedir()`，跨平台 |
+| Windows spawn detached 行为 | `child.unref()` 仍然有效，浏览器可独立运行 |
 
 ## 千牛登录
 

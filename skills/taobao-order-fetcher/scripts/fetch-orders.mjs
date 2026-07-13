@@ -32,9 +32,22 @@ import { chromium } from 'playwright';
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
+import os from 'os';
 
-const DATA_DIR = path.join(process.env.HOME, 'lab/taobao/data');
-const USER_DATA_DIR = path.join(process.env.HOME, '.cache/chrome-cdp-profile');
+const PLATFORM = process.platform;                              // 'linux' | 'win32' | 'darwin'
+const HOME = os.homedir();                                      // 跨平台 home 目录
+
+// 数据导出目录：~/lab/taobao/data（Linux/macOS/Windows 一致，用 os.homedir()）
+const DATA_DIR = path.join(HOME, 'lab', 'taobao', 'data');
+
+// 浏览器 user-data-dir：跨平台
+//   Linux:   ~/.cache/chrome-cdp-profile
+//   macOS:   ~/.cache/chrome-cdp-profile
+//   Windows: %LOCALAPPDATA%\chrome-cdp-profile（避免 C:\ 根目录权限问题）
+const USER_DATA_DIR = PLATFORM === 'win32'
+  ? path.join(process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'), 'chrome-cdp-profile')
+  : path.join(HOME, '.cache', 'chrome-cdp-profile');
+
 const DEFAULT_PORT = 9222;
 
 // 登录失败最大尝试次数：超过会触发管理员提醒（见 autoLoginWithRetry / emitAdminAlert）
@@ -150,6 +163,72 @@ async function checkCDP(port) {
   });
 }
 
+/**
+ * 跨平台查找可用的 Chromium / Chrome / Edge 二进制
+ * 返回 { bin, label, needUserDataDir } 或 null（找不到时）
+ *
+ * Linux:   snap chromium  >  Playwright 缓存 chromium-1223
+ * Windows: Playwright 缓存 chromium-1223  >  系统 Chrome  >  系统 Edge
+ * macOS:   Playwright 缓存 chromium-1223
+ *
+ * needUserDataDir:
+ *   - snap / 系统 Chrome/Edge：用各自默认 profile，无需指定 user-data-dir（保留登录态）
+ *   - Playwright bundled：必须指定 user-data-dir，否则每次启动都是新 profile
+ */
+function findChromeBin() {
+  if (PLATFORM === 'linux') {
+    // 1. snap chromium（默认 profile，无需 user-data-dir）
+    if (fs.existsSync('/snap/bin/chromium')) {
+      return { bin: '/snap/bin/chromium', label: 'snap chromium (默认 profile)', needUserDataDir: false };
+    }
+    // 2. Playwright 缓存（chromium-1223 是当前脚本锁定版本）
+    const bundled = path.join(HOME, '.cache', 'ms-playwright', 'chromium-1223', 'chrome-linux64', 'chrome');
+    if (fs.existsSync(bundled)) {
+      return { bin: bundled, label: 'Playwright bundled chromium-1223', needUserDataDir: true };
+    }
+    return null;
+  }
+
+  if (PLATFORM === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local');
+    // 1. Playwright 缓存（推荐，跟脚本逻辑完全兼容）
+    const bundled = path.join(localAppData, 'ms-playwright', 'chromium-1223', 'chrome-win', 'chrome.exe');
+    if (fs.existsSync(bundled)) {
+      return { bin: bundled, label: 'Playwright bundled chromium-1223', needUserDataDir: true };
+    }
+    // 2. 系统装的 Chrome / Edge（用默认 profile，保留登录态）
+    const candidates = [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) {
+        const isEdge = c.toLowerCase().includes('edge');
+        return { bin: c, label: `系统 ${isEdge ? 'Edge' : 'Chrome'} (默认 profile)`, needUserDataDir: false };
+      }
+    }
+    return null;
+  }
+
+  if (PLATFORM === 'darwin') {
+    // 1. Playwright 缓存
+    const bundled = path.join(HOME, 'Library', 'Caches', 'ms-playwright', 'chromium-1223', 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium');
+    if (fs.existsSync(bundled)) {
+      return { bin: bundled, label: 'Playwright bundled chromium-1223', needUserDataDir: true };
+    }
+    // 2. 系统装的 Chrome
+    const sysChrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    if (fs.existsSync(sysChrome)) {
+      return { bin: sysChrome, label: '系统 Chrome (默认 profile)', needUserDataDir: false };
+    }
+    return null;
+  }
+
+  return null;
+}
+
 async function ensureBrowser(port) {
   const cdp = await checkCDP(port);
   if (cdp.running) {
@@ -158,20 +237,33 @@ async function ensureBrowser(port) {
   }
 
   log('未检测到浏览器，启动新的 Chromium...');
-  // 确保 user-data-dir 存在
-  fs.mkdirSync(USER_DATA_DIR, { recursive: true });
 
-  // 优先 snap Chromium（用默认 profile，无需 --user-data-dir）
-  // fallback: Playwright 缓存的 Chromium
-  let chromeBin = '/snap/bin/chromium';
-  let isSnap = true;
-  if (!fs.existsSync(chromeBin)) {
-    chromeBin = path.join(process.env.HOME, '.cache/ms-playwright/chromium-1223/chrome-linux64/chrome');
-    isSnap = false;
+  // 跨平台查找浏览器二进制（snap / Playwright 缓存 / 系统 Chrome / Edge）
+  const chromeInfo = findChromeBin();
+  if (!chromeInfo) {
+    const installHint = PLATFORM === 'win32'
+      ? `请先安装：
+  • npx playwright install chromium （推荐，下载 Playwright 自带版本）
+  • 或安装 Chrome: https://www.google.com/chrome/
+  • 或安装 Edge: Win10/11 自带，无需额外装`
+      : PLATFORM === 'darwin'
+      ? `请先安装：
+  • npx playwright install chromium （推荐）
+  • 或 brew install --cask google-chrome`
+      : `请先安装：
+  • sudo snap install chromium （推荐，默认 profile 持久化登录态）
+  • 或 npx playwright install chromium`;
+    throw new Error(`找不到可用的 Chromium / Chrome / Edge\n${installHint}`);
   }
-  log(`使用浏览器: ${chromeBin}${isSnap ? ' (snap, 默认profile)' : ''}`);
+  log(`使用浏览器: ${chromeInfo.bin}`);
+  log(`  (${chromeInfo.label}, 平台: ${PLATFORM})`);
 
-  // headed 模式（老板要求）：不要 headless，浏览器窗口在 DISPLAY=:0 上老板能看到
+  // 确保 user-data-dir 存在（Playwright bundled 模式需要）
+  if (chromeInfo.needUserDataDir) {
+    fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+  }
+
+  // headed 模式（老板要求）：不要 headless，浏览器窗口老板能看到
   // 2026-07-01 改：去掉 --headless=new 和 --disable-gpu，让 snap chromium 用 X11
   // 原因：headless 模式下阿里云盾 nc 滑块行为检测更严，登录卡死
   const chromeArgs = [
@@ -180,13 +272,20 @@ async function ensureBrowser(port) {
     '--no-first-run',
     '--no-default-browser-check',
   ];
-  // snap 用默认 profile，不传 --user-data-dir；非 snap 需要指定
-  if (!isSnap) {
+  // Playwright bundled 需要显式 user-data-dir；snap / 系统浏览器用默认 profile
+  if (chromeInfo.needUserDataDir) {
     chromeArgs.push(`--user-data-dir=${USER_DATA_DIR}`);
   }
   chromeArgs.push(QN_HOME);
+
   const { spawn } = await import('child_process');
-  const child = spawn(chromeBin, chromeArgs, { detached: true, stdio: 'ignore' });
+  const spawnOpts = {
+    detached: true,
+    stdio: 'ignore',
+    // Windows 上：默认 shell:false 即可，Node 会正确处理带空格的 .exe 路径
+    // 不能设 shell:true（会把整个 cmd 字符串当成命令，破坏参数传递）
+  };
+  const child = spawn(chromeInfo.bin, chromeArgs, spawnOpts);
   child.unref();
 
   // 等 CDP 就绪
