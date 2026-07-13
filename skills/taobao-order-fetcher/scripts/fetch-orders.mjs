@@ -722,7 +722,6 @@ async function searchOrders(page) {
     const dataRows = [...rows].filter(r => !r.textContent?.includes('暂无数据'));
     return dataRows.length;
   });
-  log(`搜索结果: ${count} 条订单`);
   return count;
 }
 
