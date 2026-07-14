@@ -162,8 +162,8 @@ node skills/taobao-order-fetcher/scripts/fetch-orders.mjs --all
 
 | 用途 | Linux | Windows |
 |------|-------|---------|
-| 数据导出目录 | `~/lab/taobao/data/` | `C:\Users\<user>\lab\taobao\data\` |
-| 浏览器 user-data-dir（Playwright bundled） | `~/.cache/chrome-cdp-profile/` | `%LOCALAPPDATA%\chrome-cdp-profile\` |
+| 数据导出目录 | `~/lab/taobao/data/` | `D:\tools\orders\`（2026-07-14 老板指定） |
+| 浏览器 user-data-dir（脚本专用 profile，强制新进程避免与系统 Edge 冲突） | `~/.cache/chrome-cdp-profile/` | `%LOCALAPPDATA%\chrome-cdp-profile\` |
 | HOME 来源 | `os.homedir()` → `/home/<user>` | `os.homedir()` → `C:\Users\<user>` |
 
 ### 手动启动（绕过脚本自动启动，先把浏览器跑起来）
@@ -202,14 +202,16 @@ node skills/taobao-order-fetcher/scripts/fetch-orders.mjs --all
   --user-data-dir="%LOCALAPPDATA%\chrome-cdp-profile" ^
   "https://qn.taobao.com"
 
-:: 系统 Chrome（默认 profile，无需 user-data-dir）
+:: 系统 Chrome（必须带 --user-data-dir，否则会被并到现有窗口新 tab，CDP 起不来）
 "C:\Program Files\Google\Chrome\Application\chrome.exe" ^
   --remote-debugging-port=9222 --no-sandbox ^
+  --user-data-dir="%LOCALAPPDATA%\chrome-cdp-profile" ^
   "https://qn.taobao.com"
 
-:: 系统 Edge（Win10/11 自带）
+:: 系统 Edge（Win10/11 自带，同上必须带 user-data-dir）
 "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" ^
   --remote-debugging-port=9222 --no-sandbox ^
+  --user-data-dir="%LOCALAPPDATA%\chrome-cdp-profile" ^
   "https://qn.taobao.com"
 ```
 

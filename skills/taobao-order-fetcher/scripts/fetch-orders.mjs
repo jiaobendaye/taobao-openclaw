@@ -37,8 +37,12 @@ import os from 'os';
 const PLATFORM = process.platform;                              // 'linux' | 'win32' | 'darwin'
 const HOME = os.homedir();                                      // 跨平台 home 目录
 
-// 数据导出目录：~/lab/taobao/data（Linux/macOS/Windows 一致，用 os.homedir()）
-const DATA_DIR = path.join(HOME, 'lab', 'taobao', 'data');
+// 数据导出目录：
+//   Linux/macOS: ~/lab/taobao/data
+//   Windows:     D:\tools\orders  （2026-07-14 老板指定，独立盘符不挤系统盘）
+const DATA_DIR = PLATFORM === 'win32'
+  ? 'D:\\tools\\orders'
+  : path.join(HOME, 'lab', 'taobao', 'data');
 
 // 浏览器 user-data-dir：跨平台
 //   Linux:   ~/.cache/chrome-cdp-profile
@@ -196,7 +200,14 @@ function findChromeBin() {
     if (fs.existsSync(bundled)) {
       return { bin: bundled, label: 'Playwright bundled chromium-1223', needUserDataDir: true };
     }
-    // 2. 系统装的 Chrome / Edge（用默认 profile，保留登录态）
+    // 2. 系统装的 Chrome / Edge
+    //    注意：必须用独立 profile 强制新进程！
+    //    Windows 系统 Chrome/Edge 有单实例合并行为——
+    //    当系统已有 Edge 在跑时，不带 --user-data-dir 启动 msedge.exe，
+    //    命令行参数（含 --remote-debugging-port）会被丢弃，
+    //    URL 转发到现有窗口的 tab，CDP 永远起不来。
+    //    独立 profile 目录跟默认 profile 不冲突，强制出独立进程。
+    //    代价：失去 Edge 默认 profile 的 cookies（脚本会自动登录兜底）
     const candidates = [
       'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
       'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
@@ -206,7 +217,7 @@ function findChromeBin() {
     for (const c of candidates) {
       if (fs.existsSync(c)) {
         const isEdge = c.toLowerCase().includes('edge');
-        return { bin: c, label: `系统 ${isEdge ? 'Edge' : 'Chrome'} (默认 profile)`, needUserDataDir: false };
+        return { bin: c, label: `系统 ${isEdge ? 'Edge' : 'Chrome'} (独立 profile)`, needUserDataDir: true };
       }
     }
     return null;
@@ -261,6 +272,13 @@ async function ensureBrowser(port) {
   // 确保 user-data-dir 存在（Playwright bundled 模式需要）
   if (chromeInfo.needUserDataDir) {
     fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+  }
+
+  // 确保数据导出目录存在（Windows 上 D:\tools\orders 可能还没建）
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  } catch (e) {
+    throw new Error(`无法创建数据目录 ${DATA_DIR}: ${e.message}\n请检查路径权限或盘符是否存在`);
   }
 
   // headed 模式（老板要求）：不要 headless，浏览器窗口老板能看到
