@@ -195,12 +195,7 @@ function findChromeBin() {
 
   if (PLATFORM === 'win32') {
     const localAppData = process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local');
-    // 1. Playwright 缓存（推荐，跟脚本逻辑完全兼容）
-    const bundled = path.join(localAppData, 'ms-playwright', 'chromium-1223', 'chrome-win', 'chrome.exe');
-    if (fs.existsSync(bundled)) {
-      return { bin: bundled, label: 'Playwright bundled chromium-1223', needUserDataDir: true };
-    }
-    // 2. 系统装的 Chrome / Edge
+    // 系统浏览器优先：Edge（Win10/11 自带，无需安装） → Chrome
     //    注意：必须用独立 profile 强制新进程！
     //    Windows 系统 Chrome/Edge 有单实例合并行为——
     //    当系统已有 Edge 在跑时，不带 --user-data-dir 启动 msedge.exe，
@@ -209,16 +204,21 @@ function findChromeBin() {
     //    独立 profile 目录跟默认 profile 不冲突，强制出独立进程。
     //    代价：失去 Edge 默认 profile 的 cookies（脚本会自动登录兜底）
     const candidates = [
-      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
       'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
       'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
     ];
     for (const c of candidates) {
       if (fs.existsSync(c)) {
         const isEdge = c.toLowerCase().includes('edge');
         return { bin: c, label: `系统 ${isEdge ? 'Edge' : 'Chrome'} (独立 profile)`, needUserDataDir: true };
       }
+    }
+    // 3. Playwright bundled（最后兜底）
+    const bundled = path.join(localAppData, 'ms-playwright', 'chromium-1223', 'chrome-win', 'chrome.exe');
+    if (fs.existsSync(bundled)) {
+      return { bin: bundled, label: 'Playwright bundled chromium-1223', needUserDataDir: true };
     }
     return null;
   }

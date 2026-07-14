@@ -153,7 +153,7 @@ node skills/taobao-order-fetcher/scripts/fetch-orders.mjs --all
 | 平台 | 查找顺序 |
 |------|---------|
 | **Linux** | 1. `/snap/bin/chromium`（默认 profile）→ 2. `~/.cache/ms-playwright/chromium-1223/chrome-linux64/chrome` |
-| **Windows** | 1. `%LOCALAPPDATA%\ms-playwright\chromium-1223\chrome-win\chrome.exe` → 2. 系统 Chrome → 3. 系统 Edge（都用默认 profile） |
+| **Windows** | 1. 系统 Edge（Win10/11 自带，无需安装）→ 2. 系统 Chrome → 3. `%LOCALAPPDATA%\ms-playwright\chromium-1223\chrome-win\chrome.exe`（都用独立 profile） |
 | **macOS** | 1. `~/Library/Caches/ms-playwright/chromium-1223/...` → 2. `/Applications/Google Chrome.app/...` |
 
 找不到时脚本会**报错并给出对应平台的安装提示**（不会静默吞错）。
